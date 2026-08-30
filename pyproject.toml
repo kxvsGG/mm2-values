@@ -1,7 +1,8 @@
 [project]
-name = "webhook-proxy"
-version = "0.1.0"
+name = "mm2-values"
+version = "1.0.0"
 dependencies = [
-    "requests==2.31.0",
+    "flask>=3.0",
+    "curl-cffi>=0.7",
+    "beautifulsoup4>=4.12",
 ]
-# Remove the [tool.vercel] section entirely
