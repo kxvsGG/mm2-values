@@ -2,8 +2,8 @@ import concurrent.futures
 import os
 import re
 
-import requests
 from bs4 import BeautifulSoup
+from curl_cffi import requests
 from flask import Flask, Response
 
 app = Flask(__name__)
@@ -47,11 +47,8 @@ CATEGORIES = {
 }
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
+    "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 
@@ -91,7 +88,7 @@ def parse_special_value(text):
 def fetch_category(rarity_key, url):
     items = {}
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        res = requests.get(url, headers=HEADERS, impersonate="chrome131", timeout=20)
         if res.status_code != 200:
             return rarity_key, None
         soup = BeautifulSoup(res.text, "html.parser")
@@ -99,6 +96,8 @@ def fetch_category(rarity_key, url):
         bodies = soup.find_all(class_="itembody")
         for head, body in zip(heads, bodies):
             name = head.get_text(separator=" ").split(" Click ")[0].strip()
+            if not name:
+                continue
             if rarity_key == "chroma":
                 name = re.sub(r"^(Chroma|C\.)\s+", "", name, flags=re.IGNORECASE)
             val_tag = body.find("b", class_="itemvalue")
@@ -144,11 +143,11 @@ def get_lua_table():
         futures = {executor.submit(fetch_category, k, v): k for k, v in CATEGORIES.items()}
         for future in concurrent.futures.as_completed(futures):
             key, data = future.result()
-            if data is None or len(data) == 0:
+            if data is None:
                 failed_categories.append(key)
-            results[CAT_MAP[key]] = data
+            results[CAT_MAP[key]] = data if data is not None else {}
 
-    if failed_categories:
+    if len(failed_categories) >= len(CATEGORIES):
         backup = read_backup()
         if backup:
             return Response(backup, mimetype="text/plain")
