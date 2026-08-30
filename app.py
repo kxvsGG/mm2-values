@@ -50,13 +50,11 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-
 def read_backup():
     if os.path.exists(BACKUP_FILE):
         with open(BACKUP_FILE, "r", encoding="utf-8") as f:
             return f.read()
     return None
-
 
 def write_backup(content):
     try:
@@ -64,7 +62,6 @@ def write_backup(content):
             f.write(content)
     except OSError as e:
         app.logger.warning(f"Could not write backup: {e}")
-
 
 def parse_special_value(text):
     text = text.strip()
@@ -81,7 +78,6 @@ def parse_special_value(text):
     if "T1 Common" in text:
         return val * 0.025
     return val
-
 
 def fetch_category(rarity_key, url):
     items = {}
@@ -116,7 +112,6 @@ def fetch_category(rarity_key, url):
         return rarity_key, None
     return rarity_key, items
 
-
 def build_lua(results):
     lua = "return {\n"
     for cat in CAT_ORDER:
@@ -130,7 +125,6 @@ def build_lua(results):
         lua += ",\n".join(rows) + "\n    },\n"
     lua = lua.rstrip(",\n") + "\n}"
     return lua
-
 
 @app.route("/")
 def get_lua_table():
@@ -156,7 +150,6 @@ def get_lua_table():
         write_backup(lua_output)
 
     return Response(lua_output, mimetype="text/plain")
-
 
 @app.route("/backup")
 def get_only_backup():
